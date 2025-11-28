@@ -1,3 +1,5 @@
 .venv/
 CamCAN/
 .vscode/
+cc700/
+meg_cache/
