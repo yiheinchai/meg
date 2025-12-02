@@ -644,7 +644,6 @@ if __name__ == "__main__":
     print(f"Training for {num_epochs} epochs\n")
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    display_handle = display(fig, display_id=True)
     losses = []
     batch_nums = []
 
@@ -682,17 +681,19 @@ if __name__ == "__main__":
                 ax.set_ylabel("Loss")
                 ax.set_title("Training Loss per Batch")
                 ax.grid(True)
-                display_handle.update(fig)
 
         avg_loss = epoch_loss / len(train_loader)
         print(
             f"\n✓ Epoch {epoch+1}/{num_epochs} Complete | Average Loss: {avg_loss:.4f}"
         )
 
-    display_handle.update(fig)
     print("\n" + "=" * 50)
     print("TRAINING COMPLETED")
     print("=" * 50)
+
+    losses_tensor = torch.tensor(losses)
+    # save losses to disk
+    torch.save(losses_tensor, "training_losses.pt")
 
     # |export
 
