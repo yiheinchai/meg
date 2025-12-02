@@ -1,6 +1,6 @@
 #|default_exp train
 #|export
-
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,6 +26,9 @@ warnings.filterwarnings('ignore')
 # Set plotting style
 sns.set_style('whitegrid')
 plt.rcParams['figure.figsize'] = (12, 6)
+
+train_log = open("train_log", "w+")
+sys.stdout = train_log
 
 # Define dataset paths
 base_path = Path('D:/CamCAN/cc700/meg/pipeline/release005/BIDSsep')
@@ -286,6 +289,8 @@ print("Note: Data will be loaded on-demand to avoid memory overflow")
 
 print("="*50)
 
+
+# raise RuntimeError("Finished creating window cache")
 #|export
 
 class NoiseInjection():
@@ -500,7 +505,7 @@ class WindowMEG_Dataset(Dataset):
                 "Please run create_window_cache() first."
             )
         
-        print(f"✓ Loaded {len(self.file_paths)} windows ready for training")
+        print(f"Loaded {len(self.file_paths)} windows ready for training")
         print(f"  Storage format: PyTorch tensors (float16)")
         print(f"  Benefits: No parsing overhead + Perfect shuffling + Max GPU usage")
     
@@ -816,3 +821,5 @@ print("="*50)
 # nb_export('understand.ipynb', '.')
 
 
+sys.stdout = sys.__stdout__
+train_log.close()

@@ -1,0 +1,37 @@
+Dataset paths configured successfully!
+Using device: cuda
+
+==================================================
+LOADING PARTICIPANT IDS (NOT DATA)
+==================================================
+Found 646 participants
+Note: Data will be loaded on-demand to avoid memory overflow
+==================================================
+
+==================================================
+PREPARING TRAINING
+==================================================
+Using WindowMEG_Dataset - loading .pt tensors from disk...
+Expected GPU utilization: ~95% (vs ~40% with lazy loading)
+Indexing .pt files in meg_windows_cache...
+Loaded 735914 windows ready for training
+  Storage format: PyTorch tensors (float16)
+  Benefits: No parsing overhead + Perfect shuffling + Max GPU usage
+Total training windows: 735914
+Creating DataLoader with batch_size=64, 8 workers...
+Total batches per epoch: 11499
+
+Initializing model...
+Encoder moved to cuda
+Loss function and optimizer initialized
+==================================================
+
+==================================================
+STARTING TRAINING
+==================================================
+Training for 10 epochs
+
+Figure(1000x600)
+
+Epoch [1/10]
+--------------------------------------------------
