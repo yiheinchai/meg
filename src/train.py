@@ -11,8 +11,7 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import umap
-from constants import REST_PATH
-
+from constants import REST_PATH, WINDOW_CACHE_PATH
 import os
 
 
@@ -154,7 +153,7 @@ class WindowMEG_Dataset(Dataset):
     4. 50% smaller storage (float16)
     """
 
-    def __init__(self, window_cache_dir="meg_windows_cache", transforms=None):
+    def __init__(self, window_cache_dir=WINDOW_CACHE_PATH, transforms=None, max_files=None):
         super().__init__()
         if transforms is None:
             raise TypeError("Transforms must be filled")
@@ -165,6 +164,9 @@ class WindowMEG_Dataset(Dataset):
         # Fast indexing of all .pt files from subject subfolders
         print(f"Indexing .pt files in {window_cache_dir}...")
         self.file_paths = list(self.window_cache_dir.glob("*/*.pt"))
+
+        if max_files is not None:
+            self.file_paths = self.file_paths[:max_files]
 
         if len(self.file_paths) == 0:
             raise FileNotFoundError(
@@ -206,6 +208,12 @@ if __name__ == "__main__":
     from multiprocessing import freeze_support
     from constants import WINDOW_CACHE_PATH
 
+    MAX_FILES = None
+    RUN_NAME = "run_1"
+    CHECKPOINT_PATH = Path(f"./checkpoint")
+    CHECKPOINT_NAME = f"{RUN_NAME}_checkpoint.pth"
+    BATCH_SIZE = 64
+
     freeze_support()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -225,18 +233,16 @@ if __name__ == "__main__":
     aug_pipeline = transforms.Compose([StdGaussianNoise(std=0.1)])
 
     train_dataset = WindowMEG_Dataset(
-        window_cache_dir=WINDOW_CACHE_PATH, transforms=aug_pipeline
-    )
-
+        window_cache_dir=WINDOW_CACHE_PATH, transforms=aug_pipeline, max_files=MAX_FILES)    
     print(f"Total training windows: {len(train_dataset)}")
 
-    print("Creating DataLoader with batch_size=64, 8 workers...")
+    print(f"Creating DataLoader with batch_size={BATCH_SIZE}, 8 workers...")
     # Increased num_workers for .pt files (they load much faster than .fif)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=64,
+        batch_size=BATCH_SIZE,
         shuffle=True,
-        # num_workers=8, pin_memory=True
+        num_workers=8, pin_memory=True, persistent_workers=True, prefetch_factor=2
     )
     print(f"Total batches per epoch: {len(train_loader)}")
 
@@ -258,10 +264,9 @@ if __name__ == "__main__":
 
     encoder.train()
 
-    num_epochs = 10
+    num_epochs = 100
     print(f"Training for {num_epochs} epochs\n")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
     losses = []
     batch_nums = []
 
@@ -295,18 +300,20 @@ if __name__ == "__main__":
                     f"  Batch [{batch_idx}/{len(train_loader)}] Loss: {loss.item():.4f}"
                 )
 
-            if batch_idx % 5 == 0 or batch_idx == len(train_loader) - 1:
-                ax.clear()
-                ax.plot(batch_nums, losses)
-                ax.set_xlabel("Batch")
-                ax.set_ylabel("Loss")
-                ax.set_title("Training Loss per Batch")
-                ax.grid(True)
-
         avg_loss = epoch_loss / len(train_loader)
         print(
-            f"\n✓ Epoch {epoch+1}/{num_epochs} Complete | Average Loss: {avg_loss:.4f}"
+            f"\n Epoch {epoch+1}/{num_epochs} Complete | Average Loss: {avg_loss:.4f}"
         )
+        torch.save(
+            {
+                "model_state_dict": encoder.state_dict(),
+            },
+            CHECKPOINT_PATH / f"{RUN_NAME}_epoch_{epoch}_checkpoint.pth",
+        )
+        print(f" Permanent checkpoint saved at Epoch {epoch}")
+        torch.save(torch.tensor(losses), CHECKPOINT_PATH / f"{RUN_NAME}_epoch_{epoch}_training_losses.pt")
+        print(" Model saved")
+
 
     print("\n" + "=" * 50)
     print("TRAINING COMPLETED")
@@ -314,19 +321,22 @@ if __name__ == "__main__":
 
     losses_tensor = torch.tensor(losses)
     # save losses to disk
-    torch.save(losses_tensor, "training_losses.pt")
+    torch.save(losses_tensor, f"{RUN_NAME}_training_losses.pt")
 
     # |export
 
     print("\nSaving model checkpoint...")
+
+
+
     torch.save(
         {
             "model_state_dict": encoder.state_dict(),
             "optimizer_state_dict": optimiser.state_dict(),
         },
-        "gpu_run_v1.pth",
+        CHECKPOINT_PATH / CHECKPOINT_NAME,
     )
-    print("✓ Model saved to 'gpu_run_v1.pth'")
+    print(" Model saved")
 
     # |export
 
@@ -336,10 +346,10 @@ if __name__ == "__main__":
 
     encoder = Encoder()
     encoder.load_state_dict(
-        torch.load("gpu_run_v1.pth", map_location=device)["model_state_dict"]
+        torch.load(CHECKPOINT_PATH / CHECKPOINT_NAME, map_location=device)["model_state_dict"]
     )
     encoder = encoder.to(device)
-    print("✓ Model loaded successfully")
+    print(" Model loaded successfully")
 
     # |export
 
