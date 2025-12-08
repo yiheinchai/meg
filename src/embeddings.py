@@ -36,44 +36,55 @@ if __name__ == "__main__":
     print("Loading participants data...")
     participants = pd.read_csv(os.path.join(REST_PATH, 'participants.tsv'), sep='\t')
     print(f"Found {len(participants)} participants")
-    embeddings = []
-    labels = []
-    total_participants = len(participants)
-    for idx, row in enumerate(participants.iterrows()):
-        _, row = row  # iterrows returns (index, row)
-        subject_id = row['participant_id']
-        print(f"Processing participant {idx+1}/{total_participants}: {subject_id}")
-        window_indices = np.linspace(100, 900, 50, dtype=int)
-        embs = get_participant_embeddings(subject_id, window_indices)
-        windows_collected = embs.shape[0]
-        for emb in embs:
-            embeddings.append(emb.numpy())
-            labels.append(subject_id)
-        print(f"  Collected {windows_collected} windows for {subject_id}")
     
-    print(f"Total embeddings collected: {len(embeddings)}")
-    embeddings = np.array(embeddings)
-    labels = np.array(labels)
-    
-    print("Applying UMAP...")
-    # Apply UMAP
-    reducer = umap.UMAP(random_state=42)
-    embedding_2d = reducer.fit_transform(embeddings)
-    print("UMAP applied successfully")
-    
-    print("Creating attribute dictionary...")
-    attr_dict = {row['participant_id']: {col: row[col] for col in ['p2_age', 'sex', 'handedness', 'arm', 'years_edu']} for _, row in participants.iterrows()}
-    
-    print("Saving embeddings to cache...")
-    # Save embeddings to cache
-    os.makedirs(CACHE_PATH / 'embeddings', exist_ok=True)
-    torch.save({
-        'embeddings': torch.tensor(embeddings),
-        'labels': labels,
-        'umap_2d': torch.tensor(embedding_2d),
-        'attr_dict': attr_dict
-    }, CACHE_PATH / 'embeddings' / 'embeddings_data.pt')
-    print("Embeddings saved to embeddings/embeddings_data.pt")
+    cache_path = CACHE_PATH / 'embeddings' / 'embeddings_data.pt'
+    if cache_path.exists():
+        print("Loading embeddings from cache...")
+        data = torch.load(cache_path, weights_only=False)
+        embeddings = data['embeddings'].numpy()
+        labels = data['labels']
+        embedding_2d = data['umap_2d'].numpy()
+        attr_dict = data['attr_dict']
+        print("Embeddings loaded from cache")
+    else:
+        embeddings = []
+        labels = []
+        total_participants = len(participants)
+        for idx, row in enumerate(participants.iterrows()):
+            _, row = row  # iterrows returns (index, row)
+            subject_id = row['participant_id']
+            print(f"Processing participant {idx+1}/{total_participants}: {subject_id}")
+            window_indices = np.linspace(100, 900, 50, dtype=int)
+            embs = get_participant_embeddings(subject_id, window_indices)
+            windows_collected = embs.shape[0]
+            for emb in embs:
+                embeddings.append(emb.numpy())
+                labels.append(subject_id)
+            print(f"  Collected {windows_collected} windows for {subject_id}")
+        
+        print(f"Total embeddings collected: {len(embeddings)}")
+        embeddings = np.array(embeddings)
+        labels = np.array(labels)
+        
+        print("Applying UMAP...")
+        # Apply UMAP
+        reducer = umap.UMAP(random_state=42)
+        embedding_2d = reducer.fit_transform(embeddings)
+        print("UMAP applied successfully")
+        
+        print("Creating attribute dictionary...")
+        attr_dict = {row['participant_id']: {col: row[col] for col in ['p2_age', 'sex', 'handedness', 'arm', 'years_edu']} for _, row in participants.iterrows()}
+        
+        print("Saving embeddings to cache...")
+        # Save embeddings to cache
+        os.makedirs(CACHE_PATH / 'embeddings', exist_ok=True)
+        torch.save({
+            'embeddings': torch.tensor(embeddings),
+            'labels': labels,
+            'umap_2d': torch.tensor(embedding_2d),
+            'attr_dict': attr_dict
+        }, CACHE_PATH / 'embeddings' / 'embeddings_data.pt')
+        print("Embeddings saved to embeddings/embeddings_data.pt")
     
     # Create attribute dict
     
@@ -106,5 +117,20 @@ if __name__ == "__main__":
         plt.savefig(f'./figures/umap_{attr}.png')
         plt.close()
         print(f"Plot saved: figures/umap_{attr}.png")
+    
+    print(f"Generating plot for subject_id...")
+    plt.figure(figsize=(10, 8))
+    unique_labels = np.unique(labels)
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_labels)))
+    for i, label in enumerate(unique_labels):
+        mask = labels == label
+        plt.scatter(embedding_2d[mask, 0], embedding_2d[mask, 1], color=colors[i], label=label, alpha=0.5)
+    plt.legend()
+    plt.title('UMAP of MEG Embeddings colored by subject_id')
+    plt.xlabel('UMAP 1')
+    plt.ylabel('UMAP 2')
+    plt.savefig(f'./figures/umap_subject_id.png')
+    plt.close()
+    print(f"Plot saved: figures/umap_subject_id.png")
     
     print("All plots generated. Script completed.")
