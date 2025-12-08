@@ -9,3 +9,5 @@ NOISE_PATH = BASE_PATH / "noise"
 CACHE_PATH = ROOT / "meg" / "cache"
 MEG_CACHE_PATH = CACHE_PATH / "meg_cache"
 WINDOW_CACHE_PATH = CACHE_PATH / "meg_windows_cache"
+
+CHECKPOINT_PATH = ROOT / "meg" / "checkpoint"

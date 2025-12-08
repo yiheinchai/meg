@@ -1,175 +1,110 @@
- # Create directory to save embeddings
-    import os
+import os
+from constants import REST_PATH, WINDOW_CACHE_PATH, CHECKPOINT_PATH, CACHE_PATH
+import pandas as pd
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import umap
+from model import Encoder
 
-    embeddings_dir = Path("embeddings_cache")
-    os.makedirs(embeddings_dir, exist_ok=True)
-    print(f"Saving embeddings to: {embeddings_dir}")
+CHECKPOINT_NAME = "run_1_epoch_9_checkpoint.pth"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+encoder = Encoder()
+encoder.load_state_dict(
+    torch.load(CHECKPOINT_PATH / CHECKPOINT_NAME, map_location=device, weights_only=True)["model_state_dict"]
+)
+encoder = encoder.to(device)
+
+
+def get_participant_embeddings(subject_id, window_indices):
+    windows = []
+    for idx in window_indices:
+        try:
+            window = torch.load(WINDOW_CACHE_PATH / subject_id / f"{idx}.pt", weights_only=False)
+            windows.append(window)
+        except FileNotFoundError:
+            pass  # Skip missing windows
+    if not windows:
+        return torch.empty(0, 128)  # Return empty tensor if no windows
+    windows = torch.stack(windows)  # Shape: (batch, 306, 2000)
     with torch.no_grad():
-        for i, subj_id in enumerate(participants_ids):
-            print(f"Processing subject {i+1}/{len(participants_ids)}: {subj_id}...")
+        embeddings = encoder(windows.to(device)).cpu()
+    return embeddings  # Shape: (batch, 128)
 
-            # Load this subject's data (uses npz cache if available)
-            data = fast_load_meg_data(
-                subj_id, cache_dir="meg_cache", base_path=REST_PATH
-            )
+if __name__ == "__main__":
+    print("Loading participants data...")
+    participants = pd.read_csv(os.path.join(REST_PATH, 'participants.tsv'), sep='\t')
+    print(f"Found {len(participants)} participants")
+    embeddings = []
+    labels = []
+    total_participants = len(participants)
+    for idx, row in enumerate(participants.iterrows()):
+        _, row = row  # iterrows returns (index, row)
+        subject_id = row['participant_id']
+        print(f"Processing participant {idx+1}/{total_participants}: {subject_id}")
+        window_indices = np.linspace(100, 900, 50, dtype=int)
+        embs = get_participant_embeddings(subject_id, window_indices)
+        windows_collected = embs.shape[0]
+        for emb in embs:
+            embeddings.append(emb.numpy())
+            labels.append(subject_id)
+        print(f"  Collected {windows_collected} windows for {subject_id}")
+    
+    print(f"Total embeddings collected: {len(embeddings)}")
+    embeddings = np.array(embeddings)
+    labels = np.array(labels)
+    
+    print("Applying UMAP...")
+    # Apply UMAP
+    reducer = umap.UMAP(random_state=42)
+    embedding_2d = reducer.fit_transform(embeddings)
+    print("UMAP applied successfully")
+    
+    print("Creating attribute dictionary...")
+    attr_dict = {row['participant_id']: {col: row[col] for col in ['p2_age', 'sex', 'handedness', 'arm', 'years_edu']} for _, row in participants.iterrows()}
+    
+    print("Saving embeddings to cache...")
+    # Save embeddings to cache
+    os.makedirs(CACHE_PATH / 'embeddings', exist_ok=True)
+    torch.save({
+        'embeddings': torch.tensor(embeddings),
+        'labels': labels,
+        'umap_2d': torch.tensor(embedding_2d),
+        'attr_dict': attr_dict
+    }, CACHE_PATH / 'embeddings' / 'embeddings_data.pt')
+    print("Embeddings saved to embeddings/embeddings_data.pt")
+    
+    # Create attribute dict
+    
 
-            # Generate embeddings in batches
-            individual_embeddings = []
-            infer_dataset = MEG_Dataset(
-                data,
-                window_size=2000,
-                transforms=transforms.Compose([ZScore()]),
-                stride=500,
-            )
-            infer_dataloader = DataLoader(
-                infer_dataset, batch_size=256, shuffle=False, num_workers=2
-            )
-
-            for batch_idx, (x1, x2) in enumerate(infer_dataloader):
-                x1 = x1.to(device)
-                z1 = encoder(x1)
-                individual_embeddings.append(z1.cpu())
-
-            # Concatenate and save to disk immediately
-            subject_embeddings = torch.cat(individual_embeddings, dim=0)
-            torch.save(subject_embeddings, embeddings_dir / f"{subj_id}_embeddings.pt")
-            print(
-                f"  Generated {subject_embeddings.shape[0]} embeddings, saved to disk"
-            )
-
-            # Free memory
-            del data, individual_embeddings, subject_embeddings
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-    print(f"\n✓ Generated and saved embeddings for {len(participants_ids)} subjects")
-    print("=" * 50)
-
-    # |export
-
-    print("\n" + "=" * 50)
-    print("LOADING METADATA FOR VISUALIZATION")
-    print("=" * 50)
-
-    # Load age and sex from participants.tsv
-    age_labels_list = []
-    sex_labels_list = []
-
-    for i, subj_id in enumerate(participants_ids):
-        # Get metadata from dataframe
-        subj_data = df[df["participant_id"] == subj_id].iloc[0]
-        age = subj_data.get("age", 0)  # Adjust column name as needed
-        sex = subj_data.get("sex", 0)  # Adjust column name as needed (or 'gender')
-
-        # Load embeddings to get count
-        embeddings = torch.load(embeddings_dir / f"{subj_id}_embeddings.pt")
-        num_windows = embeddings.shape[0]
-
-        age_labels_list.append(np.full(num_windows, age))
-        sex_labels_list.append(np.full(num_windows, sex))
-
-        del embeddings  # Free memory
-        if (i + 1) % 50 == 0:
-            print(f"Processed metadata for {i+1}/{len(participants_ids)} subjects")
-
-    age_labels_numpy = np.concatenate(age_labels_list, axis=0)
-    sex_labels_numpy = np.concatenate(sex_labels_list, axis=0)
-    print(f"Total data points: {len(age_labels_numpy)}")
-
-    print("\n" + "=" * 50)
-    print("DIMENSIONALITY REDUCTION (UMAP)")
-    print("=" * 50)
-
-    print("Fitting UMAP reducer in batches...")
-    dim_reducer = umap.UMAP(
-        n_neighbors=30, min_dist=0.1, n_components=2, random_state=42
-    )
-
-    # Load embeddings in batches to avoid RAM overflow
-    batch_size_subjects = 50  # Process 50 subjects at a time
-    all_embeddings_2d = []
-
-    for batch_start in range(0, len(participants_ids), batch_size_subjects):
-        batch_end = min(batch_start + batch_size_subjects, len(participants_ids))
-        print(
-            f"Processing subjects {batch_start+1}-{batch_end}/{len(participants_ids)}..."
-        )
-
-        batch_embeddings = []
-        for i in range(batch_start, batch_end):
-            subj_id = participants_ids[i]
-            embeddings = torch.load(embeddings_dir / f"{subj_id}_embeddings.pt")
-            batch_embeddings.append(embeddings)
-
-        batch_concat = torch.cat(batch_embeddings).numpy()
-
-        # Fit on first batch, transform on subsequent
-        if batch_start == 0:
-            batch_2d = dim_reducer.fit_transform(batch_concat)
+    continuous_attrs = ['p2_age', 'handedness', 'years_edu']
+    categorical_attrs = ['sex', 'arm']
+    
+    for attr in continuous_attrs + categorical_attrs:
+        print(f"Generating plot for {attr}...")
+        plt.figure(figsize=(10, 8))
+        values = [attr_dict[label][attr] for label in labels]
+        if attr in continuous_attrs:
+            # Filter out NaN
+            valid_mask = [not pd.isna(v) for v in values]
+            valid_2d = embedding_2d[valid_mask]
+            valid_values = [v for v, m in zip(values, valid_mask) if m]
+            scatter = plt.scatter(valid_2d[:, 0], valid_2d[:, 1], c=valid_values, cmap='viridis', alpha=0.5)
+            plt.colorbar(scatter, label=attr)
         else:
-            batch_2d = dim_reducer.transform(batch_concat)
-
-        all_embeddings_2d.append(batch_2d)
-        del batch_embeddings, batch_concat
-        print(f"  Batch shape: {batch_2d.shape}")
-
-    embedding_2d = np.vstack(all_embeddings_2d)
-    print(f"\nFinal UMAP output shape: {embedding_2d.shape}")
-    print("✓ UMAP reduction complete")
-    print("=" * 50)
-
-    # |export
-
-    print("\n" + "=" * 50)
-    print("CREATING VISUALIZATIONS")
-    print("=" * 50)
-
-    # --- Create a 1x2 figure ---
-    print("Generating plots...")
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-
-    # --- Plot 1: Colored by AGE ---
-    plot1 = ax1.scatter(
-        embedding_2d[:, 0],
-        embedding_2d[:, 1],
-        c=age_labels_numpy,  # Color by age
-        cmap="jet",  # Continuous colormap
-        s=0.5,
-        alpha=0.3,
-    )
-    ax1.set_title("UMAP Projection Colored by Age")
-    ax1.set_xlabel("UMAP Dimension 1")
-    ax1.set_ylabel("UMAP Dimension 2")
-    fig.colorbar(plot1, ax=ax1, label="Participant Age")
-
-    # --- Plot 2: Colored by SEX ---
-    # (Assuming sex=0 and sex=1)
-    plot2 = ax2.scatter(
-        embedding_2d[:, 0],
-        embedding_2d[:, 1],
-        c=sex_labels_numpy,  # Color by sex
-        cmap="coolwarm",  # Categorical colormap
-        s=0.5,
-        alpha=0.3,
-    )
-    ax2.set_title("UMAP Projection Colored by Sex")
-    ax2.set_xlabel("UMAP Dimension 1")
-    ax2.set_ylabel("UMAP Dimension 2")
-    fig.colorbar(plot2, ax=ax2, label="Participant Sex")
-
-    print("✓ Plots generated")
-    plt.show()
-
-    print("\n" + "=" * 50)
-    print("ALL PROCESSING COMPLETE")
-    print("=" * 50)
-
-    # Optional: Visualization code (commented out as it references undefined variables)
-    # transform = transforms.Compose([ZScore(), StdGaussianNoise(std=0.5)])
-    # norm_transform = transforms.Compose([ZScore()])
-    # plt.plot(norm_transform(data[:1000,0]))
-    # plt.plot(transform(data[:1000,0]))
-    # plt.show()
-
-    # from nbdev.export import nb_export
-    # nb_export('understand.ipynb', '.')
+            unique_vals = list(set(v for v in values if not pd.isna(v)))
+            colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_vals)))
+            val_to_color = dict(zip(unique_vals, colors))
+            for val in unique_vals:
+                mask = [v == val and not pd.isna(v) for v in values]
+                plt.scatter(embedding_2d[mask, 0], embedding_2d[mask, 1], color=val_to_color[val], label=str(val), alpha=0.5)
+            plt.legend(title=attr)
+        plt.title(f'UMAP of MEG Embeddings colored by {attr}')
+        plt.xlabel('UMAP 1')
+        plt.ylabel('UMAP 2')
+        plt.savefig(f'./figures/umap_{attr}.png')
+        plt.close()
+        print(f"Plot saved: figures/umap_{attr}.png")
+    
+    print("All plots generated. Script completed.")
