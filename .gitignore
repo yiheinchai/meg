@@ -7,3 +7,4 @@ meg_windows_cache/
 cache/
 .autotypescript/
 *.pyc
+*.hdf5

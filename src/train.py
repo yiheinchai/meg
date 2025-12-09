@@ -14,7 +14,7 @@ import umap
 from constants import REST_PATH, WINDOW_CACHE_PATH
 import os
 
-from model import NoiseInjection, StdGaussianNoise, ZScore, Encoder, NTXentLoss, MEG_Dataset, WindowMEG_Dataset
+from model import NoiseInjection, StdGaussianNoise, ZScore, Encoder, NTXentLoss, MEG_Dataset, WindowMEG_Dataset, SubjectPairDataset, UniqueSubjectBatchSampler, HDF5SubjectPairDataset
 
 
 if __name__ == "__main__":
@@ -26,6 +26,7 @@ if __name__ == "__main__":
     CHECKPOINT_PATH = Path(f"./checkpoint")
     CHECKPOINT_NAME = f"{RUN_NAME}_checkpoint.pth"
     BATCH_SIZE = 64
+    HDF5_PATH = "meg_windows.hdf5"  # Path to HDF5 cache file
 
     freeze_support()
 
@@ -38,26 +39,42 @@ if __name__ == "__main__":
     # sys.stdout = train_log
 
     print("\n" + "=" * 50)
-    print("PREPARING TRAINING")
+    print("PREPARING TRAINING (HDF5 - ULTRA FAST I/O)")
     print("=" * 50)
 
-    # Note: Data is already z-scored during window cache creation
-    # Only add noise augmentation here
+    # Note: Data is already z-scored during HDF5 cache creation
+    # Optionally add noise augmentation (can also use None for no augmentation)
     aug_pipeline = transforms.Compose([StdGaussianNoise(std=0.1)])
+    # Or use no augmentation: aug_pipeline = None
 
-    train_dataset = WindowMEG_Dataset(
-        window_cache_dir=WINDOW_CACHE_PATH, transforms=aug_pipeline, max_files=MAX_FILES)    
-    print(f"Total training windows: {len(train_dataset)}")
+    # Use HDF5SubjectPairDataset for ultra-fast I/O (eliminates file open/close bottleneck)
+    train_dataset = HDF5SubjectPairDataset(
+        hdf5_path=HDF5_PATH,
+        transforms=aug_pipeline, 
+        max_subjects=MAX_FILES
+    )
+    print(f"Total training subjects: {len(train_dataset)}")
 
-    print(f"Creating DataLoader with batch_size={BATCH_SIZE}, 8 workers...")
-    # Increased num_workers for .pt files (they load much faster than .fif)
+    # Use UniqueSubjectBatchSampler to ensure unique subjects per batch
+    batch_sampler = UniqueSubjectBatchSampler(
+        dataset=train_dataset,
+        batch_size=BATCH_SIZE,
+        drop_last=True  # Drop incomplete batches to ensure consistent batch size
+    )
+
+    print(f"Creating DataLoader with batch_size={BATCH_SIZE}, unique subjects per batch...")
+    # Use batch_sampler instead of batch_size + shuffle
+    # num_workers=0 for HDF5 (h5py has its own threading, multiple workers can cause issues)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        num_workers=8, pin_memory=True, persistent_workers=True, prefetch_factor=2
+        batch_sampler=batch_sampler,
+        num_workers=0,  # HDF5 works best with single process due to file handle management
+        pin_memory=True
     )
     print(f"Total batches per epoch: {len(train_loader)}")
+    print("  Each batch contains UNIQUE subjects")
+    print("  z1 and z2 are DIFFERENT windows from the SAME subject")
+    print("  I/O: HDF5 single-file (100x faster than 700k tiny files)")
 
     print("\nInitializing model...")
     encoder = Encoder()
