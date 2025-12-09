@@ -14,19 +14,32 @@ import umap
 from constants import REST_PATH, WINDOW_CACHE_PATH
 import os
 
-from model import NoiseInjection, StdGaussianNoise, ZScore, Encoder, NTXentLoss, MEG_Dataset, WindowMEG_Dataset, SubjectPairDataset, UniqueSubjectBatchSampler, HDF5SubjectPairDataset
+from model import (
+    NoiseInjection,
+    StdGaussianNoise,
+    ZScore,
+    Encoder,
+    NTXentLoss,
+    MEG_Dataset,
+    WindowMEG_Dataset,
+    SubjectPairDataset,
+    UniqueSubjectBatchSampler,
+    WindowExhaustiveBatchSampler,
+    HDF5SubjectPairDataset,
+)
 
 
 if __name__ == "__main__":
     from multiprocessing import freeze_support
-    from constants import WINDOW_CACHE_PATH
+    from constants import WINDOW_CACHE_PATH, HDF5_CACHE_PATH
 
     MAX_FILES = None
     RUN_NAME = "run_1"
     CHECKPOINT_PATH = Path(f"./checkpoint")
     CHECKPOINT_NAME = f"{RUN_NAME}_checkpoint.pth"
-    BATCH_SIZE = 64
-    HDF5_PATH = "meg_windows.hdf5"  # Path to HDF5 cache file
+    BATCH_SIZE = 3  # Max unique subjects per batch
+    NUM_EPOCHS = 10
+    HDF5_PATH = HDF5_CACHE_PATH / "meg_windows.hdf5"  # Path to HDF5 cache file
 
     freeze_support()
 
@@ -49,30 +62,30 @@ if __name__ == "__main__":
 
     # Use HDF5SubjectPairDataset for ultra-fast I/O (eliminates file open/close bottleneck)
     train_dataset = HDF5SubjectPairDataset(
-        hdf5_path=HDF5_PATH,
-        transforms=aug_pipeline, 
-        max_subjects=MAX_FILES
+        hdf5_path=HDF5_PATH, transforms=aug_pipeline, max_subjects=MAX_FILES
     )
     print(f"Total training subjects: {len(train_dataset)}")
 
-    # Use UniqueSubjectBatchSampler to ensure unique subjects per batch
-    batch_sampler = UniqueSubjectBatchSampler(
+    # Use WindowExhaustiveBatchSampler to cover all windows per epoch
+    batch_sampler = WindowExhaustiveBatchSampler(
         dataset=train_dataset,
         batch_size=BATCH_SIZE,
-        drop_last=True  # Drop incomplete batches to ensure consistent batch size
     )
 
-    print(f"Creating DataLoader with batch_size={BATCH_SIZE}, unique subjects per batch...")
+    print(
+        f"Creating DataLoader with batch_size={BATCH_SIZE}, exhaustive window sampling..."
+    )
     # Use batch_sampler instead of batch_size + shuffle
     # num_workers=0 for HDF5 (h5py has its own threading, multiple workers can cause issues)
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=batch_sampler,
         num_workers=0,  # HDF5 works best with single process due to file handle management
-        pin_memory=True
+        pin_memory=True,
     )
     print(f"Total batches per epoch: {len(train_loader)}")
-    print("  Each batch contains UNIQUE subjects")
+    print("  Each epoch covers ALL windows from ALL subjects")
+    print("  Each batch contains windows from UNIQUE subjects (max {BATCH_SIZE})")
     print("  z1 and z2 are DIFFERENT windows from the SAME subject")
     print("  I/O: HDF5 single-file (100x faster than 700k tiny files)")
 
@@ -94,14 +107,13 @@ if __name__ == "__main__":
 
     encoder.train()
 
-    num_epochs = 100
-    print(f"Training for {num_epochs} epochs\n")
+    print(f"Training for {NUM_EPOCHS} epochs\n")
 
     losses = []
     batch_nums = []
 
-    for epoch in range(num_epochs):
-        print(f"\nEpoch [{epoch+1}/{num_epochs}]")
+    for epoch in range(NUM_EPOCHS):
+        print(f"\nEpoch [{epoch+1}/{NUM_EPOCHS}]")
         print("-" * 50)
         epoch_loss = 0.0
 
@@ -132,7 +144,7 @@ if __name__ == "__main__":
 
         avg_loss = epoch_loss / len(train_loader)
         print(
-            f"\n Epoch {epoch+1}/{num_epochs} Complete | Average Loss: {avg_loss:.4f}"
+            f"\n Epoch {epoch+1}/{NUM_EPOCHS} Complete | Average Loss: {avg_loss:.4f}"
         )
         torch.save(
             {
@@ -141,9 +153,11 @@ if __name__ == "__main__":
             CHECKPOINT_PATH / f"{RUN_NAME}_epoch_{epoch}_checkpoint.pth",
         )
         print(f" Permanent checkpoint saved at Epoch {epoch}")
-        torch.save(torch.tensor(losses), CHECKPOINT_PATH / f"{RUN_NAME}_epoch_{epoch}_training_losses.pt")
+        torch.save(
+            torch.tensor(losses),
+            CHECKPOINT_PATH / f"{RUN_NAME}_epoch_{epoch}_training_losses.pt",
+        )
         print(" Model saved")
-
 
     print("\n" + "=" * 50)
     print("TRAINING COMPLETED")
@@ -156,8 +170,6 @@ if __name__ == "__main__":
     # |export
 
     print("\nSaving model checkpoint...")
-
-
 
     torch.save(
         {
@@ -176,7 +188,9 @@ if __name__ == "__main__":
 
     encoder = Encoder()
     encoder.load_state_dict(
-        torch.load(CHECKPOINT_PATH / CHECKPOINT_NAME, map_location=device)["model_state_dict"]
+        torch.load(CHECKPOINT_PATH / CHECKPOINT_NAME, map_location=device)[
+            "model_state_dict"
+        ]
     )
     encoder = encoder.to(device)
     print(" Model loaded successfully")
