@@ -11,3 +11,5 @@ MEG_CACHE_PATH = CACHE_PATH / "meg_cache"
 WINDOW_CACHE_PATH = CACHE_PATH / "meg_windows_cache"
 
 CHECKPOINT_PATH = ROOT / "meg" / "checkpoint"
+
+HDF5_CACHE_PATH = CACHE_PATH / "hdf5_cache"
