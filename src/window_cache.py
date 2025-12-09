@@ -1,7 +1,7 @@
 import torch
 from pathlib import Path
-from constants import REST_PATH
-from meg_loader import fast_load_meg_data
+from src.constants import REST_PATH
+from src.meg_loader import fast_load_meg_data
 import os
 
 
@@ -82,11 +82,10 @@ def create_window_cache(
                     # Z-score normalize BEFORE converting to float16
                     # MEG values are ~1e-10, which underflows to 0 in float16
                     # Z-scoring brings values to ~[-3, 3] range which float16 handles well
-                    mean = window_data.mean(dim=-1, keepdim=True)
-                    std = window_data.std(dim=-1, keepdim=True)
-                    window_data = (window_data - mean) / (std + 1e-8)
+                    mean = data.mean(dim=-1, keepdim=True)
+                    std = data.std(dim=-1, keepdim=True)
+                    window_data = (window_data - mean) / (std)
 
-                    # Convert to float16 for 50% storage reduction
                     tensor_segment = window_data.to(torch.float16)
 
                     # Save as .pt file: SubjectID/WindowIndex.pt
@@ -120,8 +119,8 @@ def create_window_cache(
 
 
 if __name__ == "__main__":
-    from subject_cache import preprocess_and_cache_all_subjects
-    from constants import MEG_CACHE_PATH, WINDOW_CACHE_PATH, REST_PATH
+    from src.subject_cache import preprocess_and_cache_all_subjects
+    from src.constants import MEG_CACHE_PATH, WINDOW_CACHE_PATH, REST_PATH
 
     dirs = os.listdir(REST_PATH)
     subject_ids = [d for d in dirs if d.startswith("sub-")]
