@@ -148,7 +148,9 @@ class WindowMEG_Dataset(Dataset):
     4. 50% smaller storage (float16)
     """
 
-    def __init__(self, window_cache_dir=WINDOW_CACHE_PATH, transforms=None, max_files=None):
+    def __init__(
+        self, window_cache_dir=WINDOW_CACHE_PATH, transforms=None, max_files=None
+    ):
         super().__init__()
         if transforms is None:
             raise TypeError("Transforms must be filled")
@@ -201,12 +203,14 @@ class WindowMEG_Dataset(Dataset):
 
 class SubjectPairDataset(Dataset):
     """Dataset that returns pairs of different windows from the same subject.
-    
+
     This ensures z1 and z2 are not augmentations but actual different temporal windows
     from the same subject, helping the model learn subject-specific representations.
     """
 
-    def __init__(self, window_cache_dir=WINDOW_CACHE_PATH, transforms=None, max_subjects=None):
+    def __init__(
+        self, window_cache_dir=WINDOW_CACHE_PATH, transforms=None, max_subjects=None
+    ):
         super().__init__()
         self.window_cache_dir = Path(window_cache_dir)
         self.transforms = transforms
@@ -214,28 +218,34 @@ class SubjectPairDataset(Dataset):
         # Index windows by subject
         print(f"Indexing .pt files by subject in {window_cache_dir}...")
         self.subject_to_windows = defaultdict(list)
-        
+
         for pt_file in self.window_cache_dir.glob("*/*.pt"):
             subject_id = pt_file.parent.name
             self.subject_to_windows[subject_id].append(pt_file)
-        
+
         # Filter subjects with at least 2 windows
-        self.subject_ids = [sid for sid, windows in self.subject_to_windows.items() if len(windows) >= 2]
-        
+        self.subject_ids = [
+            sid for sid, windows in self.subject_to_windows.items() if len(windows) >= 2
+        ]
+
         if max_subjects is not None:
             self.subject_ids = self.subject_ids[:max_subjects]
-        
+
         if len(self.subject_ids) == 0:
             raise FileNotFoundError(
                 f"No subjects with at least 2 windows found in {window_cache_dir}. "
                 "Please run create_window_cache() first."
             )
-        
+
         print(f"Loaded {len(self.subject_ids)} subjects")
-        total_windows = sum(len(self.subject_to_windows[sid]) for sid in self.subject_ids)
+        total_windows = sum(
+            len(self.subject_to_windows[sid]) for sid in self.subject_ids
+        )
         print(f"  Total windows: {total_windows}")
         print(f"  Avg windows per subject: {total_windows / len(self.subject_ids):.1f}")
-        print(f"  Benefits: Different windows (not augmentations) + Subject identity learning")
+        print(
+            f"  Benefits: Different windows (not augmentations) + Subject identity learning"
+        )
 
     def __len__(self):
         return len(self.subject_ids)
@@ -244,25 +254,25 @@ class SubjectPairDataset(Dataset):
         # Get subject ID
         subject_id = self.subject_ids[index]
         windows = self.subject_to_windows[subject_id]
-        
+
         # Sample two different windows from this subject
         if len(windows) >= 2:
             window_1_path, window_2_path = random.sample(windows, 2)
         else:
             # Should not happen due to filtering, but handle gracefully
             window_1_path = window_2_path = windows[0]
-        
+
         # Load both windows
         data_1 = torch.load(window_1_path).float()
         data_2 = torch.load(window_2_path).float()
-        
+
         # Apply optional transforms (e.g., noise injection)
         if self.transforms is not None:
             data_1 = self.transforms(data_1)
             data_2 = self.transforms(data_2)
-        
+
         return data_1, data_2
-    
+
     def get_subject_id(self, index):
         """Get subject ID for a given index"""
         return self.subject_ids[index]
@@ -270,7 +280,7 @@ class SubjectPairDataset(Dataset):
 
 class UniqueSubjectBatchSampler(Sampler):
     """Batch sampler that ensures all subjects in a batch are unique.
-    
+
     This helps the model learn to separate different subjects by ensuring
     that negatives in the contrastive loss are truly from different subjects.
     """
@@ -284,14 +294,14 @@ class UniqueSubjectBatchSampler(Sampler):
     def __iter__(self):
         # Shuffle subject indices
         indices = torch.randperm(self.num_subjects).tolist()
-        
+
         # Create batches of unique subjects
         batches = []
         for i in range(0, len(indices), self.batch_size):
-            batch = indices[i:i + self.batch_size]
+            batch = indices[i : i + self.batch_size]
             if len(batch) == self.batch_size or not self.drop_last:
                 batches.append(batch)
-        
+
         return iter(batches)
 
     def __len__(self):
@@ -301,11 +311,80 @@ class UniqueSubjectBatchSampler(Sampler):
             return (self.num_subjects + self.batch_size - 1) // self.batch_size
 
 
+class WindowExhaustiveBatchSampler(Sampler):
+    """Batch sampler that exhaustively samples all windows from all subjects per epoch.
+
+    Each batch contains windows from unique subjects (up to batch_size subjects).
+    One epoch covers ALL windows from ALL subjects exactly once.
+
+    Example with 3 subjects having 1000 windows each, batch_size=3:
+    - Total batches per epoch: 1000 (until all windows are exhausted)
+    - Each batch: [subject_0_window_i, subject_1_window_i, subject_2_window_i]
+    """
+
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.batch_size = min(
+            batch_size, len(dataset)
+        )  # Can't exceed number of subjects
+        self.num_subjects = len(dataset)
+
+        # Get window counts for each subject (assumes HDF5SubjectPairDataset)
+        if hasattr(dataset, "subject_counts"):
+            self.subject_window_counts = dataset.subject_counts
+        else:
+            raise AttributeError("Dataset must have 'subject_counts' attribute")
+
+        # Total number of batches = max windows across all subjects
+        self.max_windows = int(np.max(self.subject_window_counts))
+
+    def __iter__(self):
+        # Create shuffled indices for each subject's windows
+        subject_window_indices = []
+        for count in self.subject_window_counts:
+            indices = torch.randperm(count).tolist()
+            subject_window_indices.append(indices)
+
+        # Track current position in each subject's window list
+        subject_positions = [0] * self.num_subjects
+
+        # Shuffle subject order for batch composition
+        subject_order = torch.randperm(self.num_subjects).tolist()
+
+        batches = []
+        # Generate batches until all windows are exhausted
+        for batch_idx in range(self.max_windows):
+            batch = []
+
+            # Try to fill batch with unique subjects
+            for subject_idx in subject_order[: self.batch_size]:
+                # Check if this subject still has windows left
+                if (
+                    subject_positions[subject_idx]
+                    < self.subject_window_counts[subject_idx]
+                ):
+                    # Create a tuple: (subject_index, window_offset_within_subject)
+                    window_offset = subject_window_indices[subject_idx][
+                        subject_positions[subject_idx]
+                    ]
+                    batch.append((subject_idx, window_offset))
+                    subject_positions[subject_idx] += 1
+
+            # Only add batch if it has at least one sample
+            if len(batch) > 0:
+                batches.append(batch)
+
+        return iter(batches)
+
+    def __len__(self):
+        return self.max_windows
+
+
 class HDF5SubjectPairDataset(Dataset):
     """Ultra-fast dataset using HDF5 for subject-pair contrastive learning.
-    
+
     Eliminates I/O bottleneck by using a single HDF5 file instead of 700,000 tiny files.
-    
+
     Benefits:
     - 100x faster I/O (no file open/close overhead)
     - Vectorized batch loading
@@ -313,90 +392,119 @@ class HDF5SubjectPairDataset(Dataset):
     - ~30% smaller with compression
     """
 
-    def __init__(self, hdf5_path="meg_windows.hdf5", transforms=None, max_subjects=None):
+    def __init__(
+        self, hdf5_path="meg_windows.hdf5", transforms=None, max_subjects=None
+    ):
         super().__init__()
         self.hdf5_path = Path(hdf5_path)
         self.transforms = transforms
-        
+
         if not self.hdf5_path.exists():
             raise FileNotFoundError(
                 f"HDF5 file not found: {hdf5_path}. "
                 "Please run create_hdf5_cache() first."
             )
-        
+
         print(f"Loading HDF5 dataset from {hdf5_path}...")
-        
+
         # Load metadata (lightweight)
-        with h5py.File(self.hdf5_path, 'r') as f:
-            self.subject_names = [s.decode('utf-8') if isinstance(s, bytes) else s 
-                                 for s in f['subject_names'][:]]
-            self.subject_start_indices = f['subject_start_indices'][:]
-            self.subject_counts = f['subject_counts'][:]
-            self.total_windows = f['windows'].shape[0]
-        
+        with h5py.File(self.hdf5_path, "r") as f:
+            self.subject_names = [
+                s.decode("utf-8") if isinstance(s, bytes) else s
+                for s in f["subject_names"][:]
+            ]
+            self.subject_start_indices = f["subject_start_indices"][:]
+            self.subject_counts = f["subject_counts"][:]
+            self.total_windows = f["windows"].shape[0]
+
         # Filter subjects with at least 2 windows
-        valid_subjects = [(name, start, count) 
-                         for name, start, count in zip(self.subject_names, 
-                                                       self.subject_start_indices, 
-                                                       self.subject_counts)
-                         if count >= 2]
-        
+        valid_subjects = [
+            (name, start, count)
+            for name, start, count in zip(
+                self.subject_names, self.subject_start_indices, self.subject_counts
+            )
+            if count >= 2
+        ]
+
         self.subject_names = [v[0] for v in valid_subjects]
         self.subject_start_indices = np.array([v[1] for v in valid_subjects])
         self.subject_counts = np.array([v[2] for v in valid_subjects])
-        
+
         if max_subjects is not None:
             self.subject_names = self.subject_names[:max_subjects]
             self.subject_start_indices = self.subject_start_indices[:max_subjects]
             self.subject_counts = self.subject_counts[:max_subjects]
-        
+
         print(f"✓ Loaded {len(self.subject_names)} subjects")
         print(f"  Total windows: {self.total_windows:,}")
-        print(f"  Avg windows per subject: {self.total_windows / len(self.subject_names):.1f}")
-        print(f"  Benefits: No I/O overhead + Instant random access + Vectorized loading")
-        
+        print(
+            f"  Avg windows per subject: {self.total_windows / len(self.subject_names):.1f}"
+        )
+        print(
+            f"  Benefits: No I/O overhead + Instant random access + Vectorized loading"
+        )
+
         # Keep HDF5 file open for fast access (one handle per worker)
         self.hdf5_file = None
         self.windows_dataset = None
-    
+
     def _ensure_hdf5_open(self):
         """Ensure HDF5 file is open (thread-safe for DataLoader workers)"""
         if self.hdf5_file is None:
-            self.hdf5_file = h5py.File(self.hdf5_path, 'r')
-            self.windows_dataset = self.hdf5_file['windows']
-    
+            self.hdf5_file = h5py.File(self.hdf5_path, "r")
+            self.windows_dataset = self.hdf5_file["windows"]
+
     def __len__(self):
         return len(self.subject_names)
-    
+
     def __getitem__(self, index):
         self._ensure_hdf5_open()
-        
-        # Get subject's window range
-        start_idx = self.subject_start_indices[index]
-        count = self.subject_counts[index]
-        
-        # Sample two different window indices for this subject
-        window_indices = np.random.choice(count, size=2, replace=False)
-        global_idx_1 = start_idx + window_indices[0]
-        global_idx_2 = start_idx + window_indices[1]
-        
+
+        # Handle both old-style (int index) and new-style (subject_idx, window_offset) tuple
+        if isinstance(index, tuple):
+            subject_idx, window_offset = index
+            # Get subject's window range
+            start_idx = self.subject_start_indices[subject_idx]
+            count = self.subject_counts[subject_idx]
+
+            # Use specified window and sample one more random window from this subject
+            global_idx_1 = start_idx + window_offset
+
+            # Sample a different window (excluding the specified one)
+            available_indices = [i for i in range(count) if i != window_offset]
+            if len(available_indices) > 0:
+                window_2_offset = np.random.choice(available_indices)
+            else:
+                # If only one window exists, use it for both (shouldn't happen due to filtering)
+                window_2_offset = window_offset
+            global_idx_2 = start_idx + window_2_offset
+        else:
+            # Old behavior: random sampling (for backward compatibility)
+            subject_idx = index
+            start_idx = self.subject_start_indices[subject_idx]
+            count = self.subject_counts[subject_idx]
+
+            # Sample two different window indices for this subject
+            window_indices = np.random.choice(count, size=2, replace=False)
+            global_idx_1 = start_idx + window_indices[0]
+            global_idx_2 = start_idx + window_indices[1]
+
         # Load both windows (fast random access)
         data_1 = torch.from_numpy(self.windows_dataset[global_idx_1]).float()
         data_2 = torch.from_numpy(self.windows_dataset[global_idx_2]).float()
-        
+
         # Apply optional transforms
         if self.transforms is not None:
             data_1 = self.transforms(data_1)
             data_2 = self.transforms(data_2)
-        
+
         return data_1, data_2
-    
+
     def get_subject_id(self, index):
         """Get subject ID for a given index"""
         return self.subject_names[index]
-    
+
     def __del__(self):
         """Clean up HDF5 file handle"""
         if self.hdf5_file is not None:
             self.hdf5_file.close()
-
