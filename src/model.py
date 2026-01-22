@@ -138,6 +138,66 @@ class MEG_Dataset(Dataset):
         return view_1, view_2
 
 
+class AEEncoder(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        self.conv1 = nn.Conv1d(
+            in_channels=306, out_channels=128, kernel_size=16, stride=4, padding=6
+        )  # batch_size, 128, 500
+        self.conv2 = nn.Conv1d(
+            in_channels=128, out_channels=64, kernel_size=8, stride=2, padding=3
+        )  # batch_size, 64, 250
+        self.conv3 = nn.Conv1d(
+            in_channels=64, out_channels=32, kernel_size=4, stride=2, padding=1
+        )  # batch_size, 32, 125
+        self.flatten1 = nn.Flatten()
+        self.linear1 = nn.Linear(32 * 125, 512)
+        self.linear2 = nn.Linear(512, latent_dim)
+
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = self.flatten1(x)
+        x = self.relu(self.linear1(x))
+        x = self.linear2(x)
+
+        return x
+
+
+class AEDecoder(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        self.linear2 = nn.Linear(latent_dim, 512)
+        self.linear1 = nn.Linear(512, 32 * 125)
+        self.conv3 = nn.ConvTranspose1d(
+            in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1
+        )  # -> 250
+        self.conv2 = nn.ConvTranspose1d(
+            in_channels=64, out_channels=128, kernel_size=8, stride=2, padding=3
+        )  # -> 500
+        self.conv1 = nn.ConvTranspose1d(
+            in_channels=128, out_channels=306, kernel_size=16, stride=4, padding=6
+        )  # -> 2000
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.relu(self.linear2(x))
+        x = self.relu(self.linear1(x))
+        x = x.reshape(-1, 32, 125)
+        x = self.relu(self.conv3(x))
+        x = self.relu(self.conv2(x))
+        x = self.conv1(x)  # No activation on final layer for reconstruction
+
+        return x
+
+
 class WindowMEG_Dataset(Dataset):
     """Loads individual 2-second windows directly from .pt files - ultra fast and memory efficient
 
